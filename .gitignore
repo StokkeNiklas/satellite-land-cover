@@ -5,3 +5,5 @@ __pycache__/
 .DS_Store
 .satellite_image.jpg
 *.jpg
+/Datasets/EuroSAT_MS
+/Datasets/EuroSAT_RGB
