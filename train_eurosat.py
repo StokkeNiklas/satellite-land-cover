@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+from openai import models
 import rasterio
 import torch
 import torch.nn as nn
@@ -70,27 +71,15 @@ class MultispectralDataset(Dataset):
             img = self.transform(img)
         return img, label
 
-# Define CNN model for RGB (3 channels)
-class RGBModel(nn.Module):
-    def __init__(self, num_classes=10):
-        super(RGBModel, self).__init__()
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3, padding=1)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.fc1 = nn.Linear(64 * 16 * 16, 128)
-        self.dropout = nn.Dropout(0.5)
-        self.fc2 = nn.Linear(128, num_classes)
+# Model for RGB (ResNet18 pretrained)
+class RGB_Classifier(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
+        self.model.fc = nn.Linear(self.model.fc.in_features, 10)
 
     def forward(self, x):
-        x = self.pool(torch.relu(self.conv1(x)))
-        x = self.pool(torch.relu(self.conv2(x)))
-        x = torch.relu(self.conv3(x))
-        x = x.view(-1, 64 * 16 * 16)
-        x = torch.relu(self.fc1(x))
-        x = self.dropout(x)
-        x = self.fc2(x)
-        return x
+        return self.model(x)
 
 # Define CNN model for MS (13 channels)
 class MSModel(nn.Module):
