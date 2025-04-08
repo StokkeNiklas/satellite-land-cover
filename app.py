@@ -85,7 +85,7 @@ st.title("🛰️ Land Cover Prediction from Satellite Imagery")
 st.markdown("Click on the map to select a location and predict its land cover.")
 
 # Create the map with Google Satellite Tiles
-m = folium.Map(location=[49.414902, 2.823100], zoom_start=15, tiles=None)
+m = folium.Map(location=[49.414902, 2.823100], zoom_start=10, tiles=None)
 
 # Add Google Satellite Layer
 folium.TileLayer(
@@ -97,7 +97,7 @@ folium.TileLayer(
 ).add_to(m)
 
 # Show the map in Streamlit
-map_data = st_folium(m, height=500, width=700)
+map_data = st_folium(m, height=800, width=1400)
 
 # Detect click event
 if map_data and "last_clicked" in map_data and map_data["last_clicked"]:
