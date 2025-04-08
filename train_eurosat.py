@@ -1,16 +1,23 @@
 import os
+import random
 import numpy as np
-import matplotlib.pyplot as plt
-from openai import models
-import rasterio
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import torchvision.transforms as transforms
 from torch.utils.data import Dataset, DataLoader
-from torchvision.datasets import ImageFolder
-from tqdm import tqdm
-import multiprocessing
+import torchvision.models as models
+from torchvision.models import resnet18, ResNet18_Weights
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix
+import matplotlib.pyplot as plt
+import seaborn as sns
+import rasterio
+from PIL import Image
+
+# Set random seed for reproducibility
+random.seed(42)
+torch.manual_seed(42)
 
 # Define paths for already unzipped datasets locally
 base_path = "Datasets"
@@ -31,118 +38,154 @@ if os.path.exists(ms_base):
 else:
     print("MS folder not found.")
 
-# Function to find images inside class subfolders
-def find_images(image_folder, num_samples=5):
-    image_paths = []
-    for class_folder in os.listdir(image_folder):
-        class_path = os.path.join(image_folder, class_folder)
+# Split dataset into train, validation, and test sets
+def split_dataset(image_folder, train_ratio=0.8, val_ratio=0.1, test_ratio=0.1):
+    train_set, val_set, test_set = [], [], []
+    for class_name in os.listdir(image_folder):
+        class_path = os.path.join(image_folder, class_name)
         if os.path.isdir(class_path):
             images = [os.path.join(class_path, img) for img in os.listdir(class_path) if img.endswith(('.jpg', '.png', '.tif'))]
-            image_paths.extend(images[:num_samples])
-        if len(image_paths) >= num_samples:
-            break
-    return image_paths
+            random.shuffle(images)
+            train, temp = train_test_split(images, test_size=(val_ratio + test_ratio), random_state=42)
+            val, test = train_test_split(temp, test_size=test_ratio/(val_ratio + test_ratio), random_state=42)
+            train_set.extend([(img, class_name) for img in train])
+            val_set.extend([(img, class_name) for img in val])
+            test_set.extend([(img, class_name) for img in test])
+    return train_set, val_set, test_set
 
-# Get sample image paths
-rgb_images = find_images(rgb_base) if os.path.exists(rgb_base) else []
-ms_images = find_images(ms_base) if os.path.exists(ms_base) else []
+# Split both datasets
+train_rgb, val_rgb, test_rgb = split_dataset(rgb_base)
+train_ms, val_ms, test_ms = split_dataset(ms_base)
 
-print("Sample RGB Images:", rgb_images)
-print("Sample MS Images:", ms_images)
+# Print dataset sizes
+print(f"RGB Dataset Sizes: Train={len(train_rgb)}, Val={len(val_rgb)}, Test={len(test_rgb)}")
+print(f"MS Dataset Sizes: Train={len(train_ms)}, Val={len(val_ms)}, Test={len(test_ms)}")
 
-# Custom Dataset for Multispectral Images
-class MultispectralDataset(Dataset):
-    def __init__(self, root_dir, transform=None):
-        print(f"Initializing MultispectralDataset with root: {root_dir}")
-        self.dataset = ImageFolder(root_dir, transform=None)
+# Custom Dataset class for EuroSAT (RGB or Multispectral)
+class EuroSATDataset(Dataset):
+    def __init__(self, data, mode="RGB", transform=None):
+        self.data = data  # List of (image_path, label)
+        self.mode = mode  # "RGB" or "MS"
         self.transform = transform
+        self.classes = sorted(set([label for _, label in data]))
+        self.class_to_idx = {c: i for i, c in enumerate(self.classes)}
 
     def __len__(self):
-        return len(self.dataset)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        img_path, label = self.dataset.samples[idx]
-        with rasterio.open(img_path) as src:
-            img = src.read()  # Shape: (13, 64, 64)
-            img = np.transpose(img, (1, 2, 0))  # Shape: (64, 64, 13)
-            img = img / 10000.0  # Normalize
-        img = torch.tensor(img, dtype=torch.float32).permute(2, 0, 1)  # Shape: (13, 64, 64)
-        if self.transform:
-            img = self.transform(img)
-        return img, label
+        img_path, label = self.data[idx]
+        label_idx = self.class_to_idx[label]
 
-# Model for RGB (ResNet18 pretrained)
+        if self.mode == "RGB":
+            # Load RGB image using PIL
+            image = Image.open(img_path).convert("RGB")
+            if self.transform:
+                image = self.transform(image)
+        elif self.mode == "MS":
+            # Load MS image using rasterio
+            with rasterio.open(img_path) as dataset:
+                image = dataset.read().astype(np.float32)
+                for i in range(image.shape[0]):
+                    band_min, band_max = np.min(image[i]), np.max(image[i])
+                    if band_max > band_min:
+                        image[i] = (image[i] - band_min) / (band_max - band_min)
+                image = torch.tensor(image)
+            if self.transform:
+                image = self.transform(image)
+
+        return image, label_idx
+
+# Define transformations for RGB (ResNet18 requires 224x224 and ImageNet normalization)
+rgb_transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(10),
+    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+# Define transformations for MS
+ms_transform = transforms.Compose([
+    transforms.RandomHorizontalFlip(),
+    transforms.RandomRotation(10),
+    transforms.RandomAffine(degrees=0, translate=(0.1, 0.1))
+])
+
+# Create dataset objects
+train_rgb_dataset = EuroSATDataset(train_rgb, mode="RGB", transform=rgb_transform)
+val_rgb_dataset = EuroSATDataset(val_rgb, mode="RGB", transform=rgb_transform)
+test_rgb_dataset = EuroSATDataset(test_rgb, mode="RGB", transform=rgb_transform)
+
+train_ms_dataset = EuroSATDataset(train_ms, mode="MS", transform=ms_transform)
+val_ms_dataset = EuroSATDataset(val_ms, mode="MS", transform=ms_transform)
+test_ms_dataset = EuroSATDataset(test_ms, mode="MS", transform=ms_transform)
+
+# Create DataLoaders
+BATCH_SIZE = 32
+
+train_rgb_loader = DataLoader(train_rgb_dataset, batch_size=BATCH_SIZE, shuffle=True)
+val_rgb_loader = DataLoader(val_rgb_dataset, batch_size=BATCH_SIZE, shuffle=False)
+test_rgb_loader = DataLoader(test_rgb_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+train_ms_loader = DataLoader(train_ms_dataset, batch_size=BATCH_SIZE, shuffle=True)
+val_ms_loader = DataLoader(val_ms_dataset, batch_size=BATCH_SIZE, shuffle=False)
+test_ms_loader = DataLoader(test_ms_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+# Define ResNet18-based model for RGB
 class RGB_Classifier(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.model = models.resnet18(weights=models.ResNet18_Weights.IMAGENET1K_V1)
-        self.model.fc = nn.Linear(self.model.fc.in_features, 10)
+    def __init__(self, num_classes=10):
+        super(RGB_Classifier, self).__init__()
+        self.model = resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+        in_features = self.model.fc.in_features
+        self.model.fc = nn.Linear(in_features, num_classes)
 
     def forward(self, x):
         return self.model(x)
 
 # Define CNN model for MS (13 channels)
-class MSModel(nn.Module):
+class MS_Classifier(nn.Module):
     def __init__(self, num_classes=10):
-        super(MSModel, self).__init__()
-        self.conv1 = nn.Conv2d(13, 32, kernel_size=3, padding=1)
+        super(MS_Classifier, self).__init__()
+        self.conv1 = nn.Conv2d(13, 64, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
         self.pool = nn.MaxPool2d(2, 2)
-        self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.fc1 = nn.Linear(64 * 16 * 16, 128)
-        self.dropout = nn.Dropout(0.5)
-        self.fc2 = nn.Linear(128, num_classes)
+        self.fc1 = nn.Linear(256 * 8 * 8, 512)
+        self.fc2 = nn.Linear(512, num_classes)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(0.6)  # Increased dropout for regularization
 
     def forward(self, x):
-        x = self.pool(torch.relu(self.conv1(x)))
-        x = self.pool(torch.relu(self.conv2(x)))
-        x = torch.relu(self.conv3(x))
-        x = x.view(-1, 64 * 16 * 16)
-        x = torch.relu(self.fc1(x))
+        x = self.pool(self.relu(self.conv1(x)))
+        x = self.pool(self.relu(self.conv2(x)))
+        x = self.pool(self.relu(self.conv3(x)))
+        x = x.view(x.shape[0], -1)
+        x = self.relu(self.fc1(x))
         x = self.dropout(x)
         x = self.fc2(x)
         return x
 
-# Training function
-def train_and_evaluate(data_dir, model_class, dataset_class, model_name, is_ms=False):
-    if not os.path.exists(data_dir):
-        print(f"Data directory {data_dir} not found. Cannot train {model_name}.")
-        return None
-
-    print(f"Preparing data for {model_name}...")
-    if is_ms:
-        dataset = dataset_class(data_dir)
-    else:
-        transform = transforms.Compose([
-            transforms.Resize((64, 64)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
-        dataset = ImageFolder(data_dir, transform=transform)
-
-    print(f"Dataset size for {model_name}: {len(dataset)}")
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
-
-    num_workers = min(8, multiprocessing.cpu_count())
-    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=num_workers)
-    val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=num_workers)
-
-    device = torch.device("cpu")  # CPU-only version
+# Training function with early stopping
+def train_and_evaluate(model, train_loader, val_loader, model_name):
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     print(f"Using device: {device}")
-    model = model_class().to(device)
+    model = model.to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.Adam(model.parameters(), lr=0.0005, weight_decay=1e-4)
 
-    num_epochs = 10
+    num_epochs = 15
+    patience = 1
+    best_val_acc = 0.0
+    epochs_no_improve = 0
     train_losses, val_losses = [], []
     train_accuracies, val_accuracies = [], []
 
     for epoch in range(num_epochs):
         model.train()
         running_loss, correct, total = 0.0, 0, 0
-        for inputs, labels in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} - Training"):
+        for inputs, labels in train_loader:
             inputs, labels = inputs.to(device), labels.to(device)
             optimizer.zero_grad()
             outputs = model(inputs)
@@ -160,10 +203,11 @@ def train_and_evaluate(data_dir, model_class, dataset_class, model_name, is_ms=F
         train_losses.append(train_loss)
         train_accuracies.append(train_acc)
 
+        # Validation
         model.eval()
         val_loss, correct, total = 0.0, 0, 0
         with torch.no_grad():
-            for inputs, labels in tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} - Validation"):
+            for inputs, labels in val_loader:
                 inputs, labels = inputs.to(device), labels.to(device)
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
@@ -181,9 +225,18 @@ def train_and_evaluate(data_dir, model_class, dataset_class, model_name, is_ms=F
               f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}, "
               f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}")
 
-        if epoch == 0 or val_acc > max(val_accuracies[:-1]):
+        # Save best model and check for early stopping
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
             torch.save(model.state_dict(), f"{model_name}.pth")
+            epochs_no_improve = 0
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= patience:
+                print(f"Early stopping at epoch {epoch+1} for {model_name}")
+                break
 
+    # Plot results
     plt.figure(figsize=(12, 4))
     plt.subplot(1, 2, 1)
     plt.plot(train_accuracies, label='Train Accuracy')
@@ -202,26 +255,62 @@ def train_and_evaluate(data_dir, model_class, dataset_class, model_name, is_ms=F
     plt.legend()
     plt.show()
 
+    # Load best model
     model.load_state_dict(torch.load(f"{model_name}.pth"))
     return model
 
+# Evaluation function
+def evaluate_model(model, test_loader, model_name, classes):
+    device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+    model.eval()
+    correct, total = 0, 0
+    all_labels, all_preds = [], []
+
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, predicted = torch.max(outputs, 1)
+            correct += (predicted == labels).sum().item()
+            total += labels.size(0)
+            all_labels.extend(labels.cpu().numpy())
+            all_preds.extend(predicted.cpu().numpy())
+
+    accuracy = correct / total
+    print(f"{model_name} Test Accuracy: {accuracy:.4f}")
+
+    # Classification Report
+    print(f"\n{model_name} Classification Report:")
+    print(classification_report(all_labels, all_preds, target_names=classes, digits=4))
+
+    # Confusion Matrix
+    cm = confusion_matrix(all_labels, all_preds)
+    plt.figure(figsize=(8, 6))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=classes, yticklabels=classes)
+    plt.xlabel("Predicted Label")
+    plt.ylabel("True Label")
+    plt.title(f"{model_name} Confusion Matrix")
+    plt.show()
+
+# Main execution
 if __name__ == "__main__":
-    # Place checks here
-    print("RGB folder exists:", os.path.exists(rgb_base))
-    print("MS folder exists:", os.path.exists(ms_base))
+    # Instantiate models
+    rgb_model = RGB_Classifier(num_classes=10)
+    ms_model = MS_Classifier(num_classes=10)
 
-    if os.path.exists(rgb_base):
-        print("RGB folder contents:", os.listdir(rgb_base)[:5])
-    if os.path.exists(ms_base):
-        print("MS folder contents:", os.listdir(ms_base)[:5])
-
-    rgb_images = find_images(rgb_base)
-    ms_images = find_images(ms_base)
-    print("Sample RGB Images:", rgb_images)
-    print("Sample MS Images:", ms_images)
-
+    # Train models
     print("Starting RGB model training...")
-    rgb_model = train_and_evaluate(rgb_base, RGBModel, ImageFolder, "rgb_model", is_ms=False)
+    rgb_model = train_and_evaluate(rgb_model, train_rgb_loader, val_rgb_loader, "rgb_model")
 
     print("Starting MS model training...")
-    ms_model = train_and_evaluate(ms_base, MSModel, MultispectralDataset, "ms_model", is_ms=True)
+    ms_model = train_and_evaluate(ms_model, train_ms_loader, val_ms_loader, "ms_model")
+
+    # Evaluate models
+    classes = sorted(os.listdir(rgb_base))
+    print("🔹 Evaluating RGB Model:")
+    evaluate_model(rgb_model, test_rgb_loader, "rgb_model", classes)
+
+    print("\n🔹 Evaluating MS Model:")
+    evaluate_model(ms_model, test_ms_loader, "ms_model", classes)
+
+    print("Models trained and evaluated successfully!")
