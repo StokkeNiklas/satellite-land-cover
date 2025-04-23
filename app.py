@@ -85,7 +85,7 @@ st.title("🛰️ Land Cover Prediction from Satellite Imagery")
 st.markdown("Click on the map to select a location and predict its land cover.")
 
 # Create the map with Google Satellite Tiles
-m = folium.Map(location=[49.414902, 2.823100], zoom_start=10, tiles=None)
+m = folium.Map(location=[44.524538, 2.275543], zoom_start=10, tiles=None)
 
 # Add Google Satellite Layer
 folium.TileLayer(
