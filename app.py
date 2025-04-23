@@ -97,7 +97,7 @@ folium.TileLayer(
 ).add_to(m)
 
 # Show the map in Streamlit
-map_data = st_folium(m, height=800, width=1400)
+map_data = st_folium(m, height=400, width=700)
 
 # Detect click event
 if map_data and "last_clicked" in map_data and map_data["last_clicked"]:
