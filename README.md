@@ -6,7 +6,7 @@ Try the deployed app here: 👉 [Open in Streamlit](https://satellite-land-cover
 
 # Reproducing the Results
 
-To train the models and replicate the results, you can either train locally on your computer or use Google Colab. Follow the steps below based on your preferred method.
+To train the models and replicate the results, you can either train locally on your computer or use Google Colab (recommended). Follow the steps below based on your preferred method.
 
 ## Option 1: Train Locally
 
@@ -60,7 +60,7 @@ To train the models and replicate the results, you can either train locally on y
 
    - Open the provided URL (usually `http://localhost:8501`) in your browser to use the app.
 
-## Option 2: Train Using Google Colab
+## Option 2: Train Using Google Colab (recommended)
 
 1. **Access the Colab Notebook**\
    Open the provided Google Colab notebook:\
