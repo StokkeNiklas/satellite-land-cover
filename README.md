@@ -116,3 +116,6 @@ GOOGLE_MAPS_API_KEY=your_api_key_here
 
 - Obtain a Google Maps API key from the Google Cloud Console.
 - Without the API key, the map interface in `app.py` will not display satellite imagery, but other functionalities will still work.
+
+# Acknowledgments
+This README file was constructed with assistance from Grok, an AI developed by xAI.
