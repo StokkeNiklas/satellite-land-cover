@@ -2,7 +2,8 @@
 
 This project trains convolutional neural networks (CNNs) to classify land cover types using the EuroSAT dataset. The trained model is deployed as an interactive web application using Streamlit.
 
-Try the deployed app here: 👉 [Open in Streamlit](https://satellite-land-cover-mpskprq6od3uxkbdrnd8jp.streamlit.app)
+Try the deployed app here: 👉 [Open in Streamlit](https://satellite-land-cover-mpskprq6od3uxkbdrnd8jp.streamlit.app)\
+(If the yellow box below the map disappears when the page is loading, please refresh the page) 
 
 # Reproducing the Results
 
